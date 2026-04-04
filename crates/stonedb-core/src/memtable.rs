@@ -155,7 +155,7 @@ impl Default for MemTable {
 
 /// Iterator over a MemTable.
 pub struct MemTableIterator<'a> {
-    memtable: &'a MemTable,
+    _memtable: &'a MemTable,
     current_key: Vec<u8>,
     current_value: Vec<u8>,
     current_seq: u64,
@@ -165,7 +165,7 @@ pub struct MemTableIterator<'a> {
 impl<'a> MemTableIterator<'a> {
     fn new(memtable: &'a MemTable) -> Self {
         Self {
-            memtable,
+            _memtable: memtable,
             current_key: Vec::new(),
             current_value: Vec::new(),
             current_seq: 0,
@@ -173,6 +173,7 @@ impl<'a> MemTableIterator<'a> {
         }
     }
 
+    #[allow(dead_code)]
     fn update_from_entry(&mut self, key: &[u8], value: &[u8], seq: u64, is_delete: bool) {
         self.current_key = key.to_vec();
         self.current_value = value.to_vec();
@@ -182,7 +183,7 @@ impl<'a> MemTableIterator<'a> {
 }
 
 impl<'a> Iterator for MemTableIterator<'a> {
-    fn seek(&mut self, key: &[u8]) {
+    fn seek(&mut self, _key: &[u8]) {
         // Not yet implemented for new SkipList
         self.current_key.clear();
         self.current_value.clear();

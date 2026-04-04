@@ -176,6 +176,7 @@ impl SkipList {
         let mut next = [0usize; MAX_HEIGHT];
 
         // Initialize beyond current height to head
+        #[allow(clippy::needless_range_loop)]
         for i in (list_height + 1)..MAX_HEIGHT {
             prev[i] = self.head_offset();
         }

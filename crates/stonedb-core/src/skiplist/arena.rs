@@ -8,9 +8,6 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::mem;
 
-/// Maximum arena size (1GB by default)
-const DEFAULT_ARENA_SIZE: usize = 1 << 30; // 1GB
-
 /// A pre-allocated memory pool for SkipList nodes.
 ///
 /// All nodes are allocated from this pool using simple bump-the-pointer
@@ -77,24 +74,28 @@ impl Arena {
 
     /// Get offset from a pointer within the arena.
     #[inline]
+    #[allow(dead_code)]
     pub unsafe fn offset_from(&self, ptr: *const u8) -> usize {
         ptr.offset_from(self.start) as usize
     }
 
     /// Get the total bytes allocated.
     #[inline]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.offset()
     }
 
     /// Get the remaining bytes available.
     #[inline]
+    #[allow(dead_code)]
     pub fn remaining(&self) -> usize {
         self.capacity - self.offset()
     }
 
     /// Check if arena is empty.
     #[inline]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.offset() == 0
     }
