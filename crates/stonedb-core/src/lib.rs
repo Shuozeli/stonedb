@@ -25,7 +25,6 @@
 //! ```toml
 //! stonedb-core = { features = ["timeline"] }
 //! ```
-//! ```
 
 // Re-export for convenience
 pub use entry::{Entry, ValueType};

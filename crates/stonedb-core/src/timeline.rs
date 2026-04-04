@@ -188,21 +188,6 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
-/// Create a SkipListInsert event
-#[cfg(feature = "timeline")]
-pub fn skiplist_insert(key: &[u8], value: &[u8], level: usize, updated: bool) -> TimelineEvent {
-    TimelineEvent::SkipListInsert {
-        key: base64_encode(key),
-        value: base64_encode(value),
-        level,
-        result: if updated {
-            "updated".to_string()
-        } else {
-            "inserted".to_string()
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "timeline")]
@@ -211,7 +196,13 @@ mod tests {
     #[test]
     #[cfg(feature = "timeline")]
     fn test_serialize_skip_list_insert() {
-        let event = skiplist_insert(b"hello", b"world", 3, false);
+        // Create event directly for testing
+        let event = TimelineEvent::SkipListInsert {
+            key: base64_encode(b"hello"),
+            value: base64_encode(b"world"),
+            level: 3,
+            result: "inserted".to_string(),
+        };
         let json = serialize_event(&event).unwrap();
         assert!(json.contains("\"event\":\"skiplist_insert\""));
         assert!(json.contains("aGVsbG8=")); // base64 of "hello"
