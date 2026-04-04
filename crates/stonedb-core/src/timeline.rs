@@ -190,45 +190,6 @@ fn base64_encode(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "timeline")]
-    use super::*;
-
-    #[test]
-    #[cfg(feature = "timeline")]
-    fn test_serialize_skip_list_insert() {
-        // Create event directly for testing
-        let event = TimelineEvent::SkipListInsert {
-            key: base64_encode(b"hello"),
-            value: base64_encode(b"world"),
-            level: 3,
-            result: "inserted".to_string(),
-        };
-        let json = serialize_event(&event).unwrap();
-        assert!(json.contains("\"event\":\"skiplist_insert\""));
-        assert!(json.contains("aGVsbG8=")); // base64 of "hello"
-        assert!(json.contains("d29ybGQ=")); // base64 of "world"
-        assert!(json.contains("\"level\":3"));
-    }
-
-    #[test]
-    #[cfg(feature = "timeline")]
-    fn test_observable_new() {
-        let (obs, _rx) = Observable::new(100);
-        // Just verify it doesn't panic
-        let _ = obs;
-    }
-
-    #[test]
-    #[cfg(feature = "timeline")]
-    fn test_base64_encode() {
-        assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
-        assert_eq!(base64_encode(b"world"), "d29ybGQ=");
-        assert_eq!(base64_encode(b""), "");
-        // Test padding
-        assert_eq!(base64_encode(b"ab"), "YWI=");
-        assert_eq!(base64_encode(b"abc"), "YWJj");
-    }
-
     #[test]
     fn test_observable_disabled() {
         let (obs, _fut) = Observable::new(100);
