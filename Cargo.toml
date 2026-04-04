@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/stonedb-core",
+]
+
+# Default package manifest for crates we haven't created yet
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["StoneDB Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stonedb/stonedb"

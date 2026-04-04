@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "stonedb",
+  "project_id": "acb97c0f-2265-4387-8c43-8699f877eb33"
+}
