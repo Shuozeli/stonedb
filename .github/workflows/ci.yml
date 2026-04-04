@@ -36,17 +36,11 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - feature: ""
-          - feature: "--features timeline"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace ${{ matrix.feature }}
+      - run: cargo test --workspace
 
   doc:
     name: Documentation
