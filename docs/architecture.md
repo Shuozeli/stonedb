@@ -1,6 +1,6 @@
 # StoneDB Architecture
 
-A high-performance, gRPC + FlatBuffers-based key-value store inspired by RocksDB, written in pure Rust.
+**Production-grade**, high-performance LSM-tree key-value store inspired by RocksDB and AgateDB, written in pure Rust. Not educational.
 
 ## Overview
 
@@ -86,10 +86,12 @@ This is an embeddable, persistent key-value database using the **LSM-tree (Log-S
 
 ### 2. MemTable
 - **Purpose**: In-memory sorted structure for fast writes
-- **Implementation**: SkipList (skiplist)
+- **Implementation**: SkipList with Arena allocator (AgateDB-style)
 - **Characteristics**:
-  - O(log n) inserts and lookups
-  - Lock-free reads with CAS operations
+  - **Arena allocator**: Pre-allocated memory pool, no malloc per insert
+  - **Lock-free CAS**: Concurrent writes without mutex
+  - **Reverse iteration**: `prev` pointer for backward scan
+  - **Zero-copy keys**: `Bytes` type (shared ownership)
   - Becomes "immutable" when full → triggers flush
 
 ### 3. SSTable (Sorted String Table)
@@ -174,13 +176,22 @@ WAL ──────────────► MemTable ───────
 | Create crates | stonedb-core, stonedb-storage, stonedb-engine |
 | Basic test harness | Can run tests |
 
-### Phase 1: Core Data Structures (No I/O)
-| Task | Delivers |
-|------|----------|
-| SkipList | O(log n) sorted structure |
-| MemTable | In-memory key-value store |
-| InternalKey encoding | Key with sequence + type |
-| Basic Iterator trait | Foundation for reads |
+### Phase 1: Core Data Structures (No I/O) ⚠️ REWRITE NEEDED
+| Task | Delivers | Status |
+|------|----------|--------|
+| SkipList | ~~O(log n) educational~~ | **→ Rewrite with Arena + CAS** |
+| MemTable | In-memory key-value store | Update for new SkipList |
+| InternalKey encoding | Key with sequence + type | Done |
+| Basic Iterator trait | Foundation for reads | Done |
+
+#### SkipList Comparison
+
+| Aspect | StoneDB (current) | AgateDB | RocksDB |
+|--------|-------------------|---------|---------|
+| **Memory** | `Box<Node>` | Arena | Arena |
+| **Concurrency** | Single-threaded | CAS | Mutex |
+| **Reverse** | No | `prev` | No |
+| **Keys** | `K: Clone` | `Bytes` | `std::string` |
 
 ### Phase 2: In-Memory DB (No Persistence)
 | Task | Delivers |
@@ -298,6 +309,8 @@ stonedb/
 ├── docs/
 │   ├── architecture.md
 │   ├── timeline.md        # Timeline replay system
+│   ├── findings/          # Research findings
+│   │   └── 2026-04-04_agatedb-skiplist-study.md
 │   └── components/
 │       ├── 01-wal.md
 │       └── ...
@@ -340,19 +353,31 @@ We minimize dependencies. Only use crates when necessary.
 | `flatbuffers` | Serialization | Could use prost initially |
 
 **Build ourselves**:
-- SkipList (well-defined algorithm)
+- SkipList (well-defined algorithm) - **BUT use Arena like AgateDB**
 - Bloom Filter (simple bit array)
 - WAL format (documented)
 - SSTable format (documented)
 - Manifest encoding (protobuf-like, can use manual encoding)
 
-**Philosophy**: Add dependencies only when profiling shows it's needed.
+**Required dependencies** (from AgateDB study):
+- `bytes` - Zero-copy byte slices (for Arena SkipList)
+- `rand` - Random number generation (for height)
+
+**Philosophy**: Add dependencies only when profiling shows it's needed. We now use `bytes` because AgateDB proves it's essential for production SkipList.
 
 ---
 
 ## References
 
-- [RocksDB](https://github.com/facebook/rocksdb) - Original LSM-tree database
-- [Agatedb](https://github.com/tikv/agatedb) - Rust LSM-tree reference
+- [RocksDB](https://github.com/facebook/rocksdb) - Original LSM-tree database (C++)
+- [AgateDB](https://github.com/tikv/agatedb) - **Primary Rust reference** (SkipList, Arena, CAS)
 - [LevelDB](https://github.com/google/leveldb) - Original Log-StructuredDB
-- [Badger](https://github.com/outcaste-io/badger) - Another Rust LSM-tree
+- [Badger](https://github.com/outcaste-io/badger) - Go LSM-tree (AgateDB base)
+
+## Findings
+
+Detailed studies are documented in [`findings/`](findings/) directory:
+
+| Date | Topic | Key Insight |
+|------|-------|-------------|
+| 2026-04-04 | [AgateDB SkipList Study](findings/2026-04-04_agatedb-skiplist-study.md) | Arena + CAS + prev pointer |
