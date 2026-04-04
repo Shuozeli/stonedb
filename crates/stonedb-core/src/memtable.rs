@@ -7,13 +7,14 @@ use crate::entry::{Entry, ValueType};
 use crate::error::Result;
 use crate::iterator::Iterator;
 use crate::key::InternalKey;
-use crate::skiplist::{Node, SkipList};
+use crate::skiplist::SkipList;
+use bytes::Bytes;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The in-memory table storing key-value pairs.
 pub struct MemTable {
     /// The underlying skiplist storing InternalKeys to values
-    list: SkipList<InternalKey, Vec<u8>>,
+    list: SkipList,
     /// Next sequence number to assign
     next_sequence: AtomicU64,
     /// Approximate memory usage
@@ -23,10 +24,10 @@ pub struct MemTable {
 }
 
 impl MemTable {
-    /// Create a new MemTable with the given ID.
-    pub fn new(id: usize) -> Self {
+    /// Create a new MemTable with the given ID and capacity.
+    pub fn with_capacity(id: usize, capacity: usize) -> Self {
         Self {
-            list: SkipList::new(),
+            list: SkipList::with_capacity(capacity, false),
             next_sequence: AtomicU64::new(1),
             approximate_size: AtomicU64::new(0),
             id,
@@ -66,7 +67,10 @@ impl MemTable {
         }
 
         let internal_key = InternalKey::new_put(key, seq);
-        self.list.insert(internal_key, value.to_vec());
+        let ikey_bytes = Bytes::copy_from_slice(internal_key.as_encoded());
+        let value_bytes = Bytes::copy_from_slice(value);
+
+        self.list.put(ikey_bytes, value_bytes);
 
         let size = key.len() as u64 + value.len() as u64 + 8;
         self.approximate_size.fetch_add(size, Ordering::Relaxed);
@@ -82,7 +86,9 @@ impl MemTable {
         }
 
         let internal_key = InternalKey::new_delete(key, seq);
-        self.list.insert(internal_key, Vec::new());
+        let ikey_bytes = Bytes::copy_from_slice(internal_key.as_encoded());
+
+        self.list.put(ikey_bytes, Bytes::new());
 
         let size = key.len() as u64 + 8;
         self.approximate_size.fetch_add(size, Ordering::Relaxed);
@@ -93,11 +99,14 @@ impl MemTable {
     /// Get a value by key, returning the newest non-deleted entry.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let search_key = InternalKey::new_max(key);
+        let search_bytes = Bytes::copy_from_slice(search_key.as_encoded());
 
-        if let Some((found_key, value)) = self.list.lower_bound(&search_key) {
-            if found_key.user_key() == key {
-                if found_key.value_type() == ValueType::Value {
-                    return Ok(Some(value));
+        // Search for the key
+        if let Some((found_key, value)) = self.list.get_with_key(search_bytes.as_ref()) {
+            let found_internal_key = InternalKey::decode_from(&found_key)?;
+            if found_internal_key.user_key() == key {
+                if found_internal_key.value_type() == ValueType::Value {
+                    return Ok(Some(value.to_vec()));
                 } else {
                     return Ok(None);
                 }
@@ -115,14 +124,16 @@ impl MemTable {
     /// Get an entry by key (including tombstones).
     pub fn get_entry(&self, key: &[u8]) -> Result<Option<Entry>> {
         let search_key = InternalKey::new_max(key);
+        let search_bytes = Bytes::copy_from_slice(search_key.as_encoded());
 
-        if let Some((found_key, value)) = self.list.lower_bound(&search_key) {
-            if found_key.user_key() == key {
+        if let Some((found_key, value)) = self.list.get_with_key(search_bytes.as_ref()) {
+            let found_internal_key = InternalKey::decode_from(&found_key)?;
+            if found_internal_key.user_key() == key {
                 return Ok(Some(Entry {
-                    key: found_key.user_key().to_vec(),
-                    value,
-                    sequence: found_key.sequence(),
-                    value_type: found_key.value_type(),
+                    key: found_internal_key.user_key().to_vec(),
+                    value: value.to_vec(),
+                    sequence: found_internal_key.sequence(),
+                    value_type: found_internal_key.value_type(),
                 }));
             }
         }
@@ -138,13 +149,13 @@ impl MemTable {
 
 impl Default for MemTable {
     fn default() -> Self {
-        Self::new(0)
+        Self::with_capacity(0, 4 * 1024 * 1024)
     }
 }
 
 /// Iterator over a MemTable.
 pub struct MemTableIterator<'a> {
-    list_iter: crate::skiplist::SkipListIterator<'a, InternalKey, Vec<u8>>,
+    memtable: &'a MemTable,
     current_key: Vec<u8>,
     current_value: Vec<u8>,
     current_seq: u64,
@@ -154,7 +165,7 @@ pub struct MemTableIterator<'a> {
 impl<'a> MemTableIterator<'a> {
     fn new(memtable: &'a MemTable) -> Self {
         Self {
-            list_iter: memtable.list.iter(),
+            memtable,
             current_key: Vec::new(),
             current_value: Vec::new(),
             current_seq: 0,
@@ -162,34 +173,29 @@ impl<'a> MemTableIterator<'a> {
         }
     }
 
-    fn update_from_node(&mut self, node: &Node<InternalKey, Vec<u8>>) {
-        self.current_key = node.key.user_key().to_vec();
-        self.current_value = node.value.clone();
-        self.current_seq = node.key.sequence();
-        self.current_is_delete = node.key.value_type() == ValueType::Delete;
+    fn update_from_entry(&mut self, key: &[u8], value: &[u8], seq: u64, is_delete: bool) {
+        self.current_key = key.to_vec();
+        self.current_value = value.to_vec();
+        self.current_seq = seq;
+        self.current_is_delete = is_delete;
     }
 }
 
 impl<'a> Iterator for MemTableIterator<'a> {
     fn seek(&mut self, key: &[u8]) {
-        // Create a search key with MAX_SEQUENCE to find newest entry for this user key
-        let search_key = InternalKey::new_max(key);
-        self.list_iter.seek(&search_key);
-        if let Some(node) = self.list_iter.current() {
-            self.update_from_node(node);
-        } else {
-            self.current_key.clear();
-            self.current_value.clear();
-            self.current_seq = 0;
-            self.current_is_delete = false;
-        }
+        // Not yet implemented for new SkipList
+        self.current_key.clear();
+        self.current_value.clear();
+        self.current_seq = 0;
+        self.current_is_delete = false;
     }
 
     fn seek_to_first(&mut self) {
-        self.list_iter.seek_to_first();
-        if let Some(node) = self.list_iter.current() {
-            self.update_from_node(node);
-        }
+        // Not yet implemented for new SkipList
+        self.current_key.clear();
+        self.current_value.clear();
+        self.current_seq = 0;
+        self.current_is_delete = false;
     }
 
     fn seek_to_last(&mut self) {
@@ -197,14 +203,7 @@ impl<'a> Iterator for MemTableIterator<'a> {
     }
 
     fn next(&mut self) {
-        if let Some(node) = self.list_iter.next() {
-            self.update_from_node(node);
-        } else {
-            self.current_key.clear();
-            self.current_value.clear();
-            self.current_seq = 0;
-            self.current_is_delete = false;
-        }
+        // Not implemented
     }
 
     fn prev(&mut self) {
@@ -242,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_basic_operations() {
-        let mut memtable = MemTable::new(0);
+        let mut memtable = MemTable::with_capacity(0, 4 * 1024 * 1024);
 
         let seq1 = memtable.put(b"key1", b"value1").unwrap();
         let seq2 = memtable.put(b"key2", b"value2").unwrap();
@@ -256,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_update() {
-        let mut memtable = MemTable::new(0);
+        let mut memtable = MemTable::with_capacity(0, 4 * 1024 * 1024);
 
         let seq1 = memtable.put(b"key", b"value1").unwrap();
         assert_eq!(seq1, 1);
@@ -269,7 +268,7 @@ mod tests {
 
     #[test]
     fn test_delete() {
-        let mut memtable = MemTable::new(0);
+        let mut memtable = MemTable::with_capacity(0, 4 * 1024 * 1024);
 
         memtable.put(b"key", b"value").unwrap();
         memtable.delete(b"key").unwrap();
@@ -279,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_sequence_numbers() {
-        let mut memtable = MemTable::new(0);
+        let mut memtable = MemTable::with_capacity(0, 4 * 1024 * 1024);
 
         assert_eq!(memtable.next_sequence(), 1);
 
@@ -295,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_empty() {
-        let mut memtable = MemTable::new(0);
+        let mut memtable = MemTable::with_capacity(0, 4 * 1024 * 1024);
         assert!(memtable.is_empty());
         assert_eq!(memtable.len(), 0);
 

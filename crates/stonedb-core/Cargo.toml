@@ -9,7 +9,9 @@ timeline = ["tokio/sync", "serde/derive", "serde_json"]
 
 # Core data structures only - no I/O dependencies
 [dependencies]
-getrandom = "0.2"
+bytes = "1"       # Zero-copy byte slices (Arena SkipList)
+rand = "0.8"      # Random number generation (height)
+getrandom = "0.2" # getrandom for secure random (if needed)
 serde = { version = "1", features = ["derive"], default-features = false }
 serde_json = { version = "1", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
