@@ -24,7 +24,8 @@ impl InternalKey {
     pub fn new(key: &[u8], sequence: u64, value_type: ValueType) -> Self {
         let mut encoded = Vec::with_capacity(key.len() + 8);
         encoded.extend_from_slice(key);
-        encoded.extend_from_slice(&sequence.to_be_bytes()[1..]); // 7 bytes
+        let encoded_sequence = MAX_SEQUENCE - sequence;
+        encoded.extend_from_slice(&encoded_sequence.to_be_bytes()[1..]); // 7 bytes
         encoded.push(if value_type == ValueType::Value {
             0x1
         } else {
@@ -61,7 +62,7 @@ impl InternalKey {
         let seq_type = &self.encoded[self.encoded.len() - 8..self.encoded.len() - 1];
         let mut bytes = [0u8; 8];
         bytes[1..].copy_from_slice(seq_type); // Prepend 0
-        u64::from_be_bytes(bytes)
+        MAX_SEQUENCE - u64::from_be_bytes(bytes)
     }
 
     /// Get the value type

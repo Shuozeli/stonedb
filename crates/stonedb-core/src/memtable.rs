@@ -102,7 +102,7 @@ impl MemTable {
         let search_bytes = Bytes::copy_from_slice(search_key.as_encoded());
 
         // Search for the key
-        if let Some((found_key, value)) = self.list.get_with_key(search_bytes.as_ref()) {
+        if let Some((found_key, value)) = self.list.lower_bound(search_bytes.as_ref()) {
             let found_internal_key = InternalKey::decode_from(&found_key)?;
             if found_internal_key.user_key() == key {
                 if found_internal_key.value_type() == ValueType::Value {
@@ -126,7 +126,7 @@ impl MemTable {
         let search_key = InternalKey::new_max(key);
         let search_bytes = Bytes::copy_from_slice(search_key.as_encoded());
 
-        if let Some((found_key, value)) = self.list.get_with_key(search_bytes.as_ref()) {
+        if let Some((found_key, value)) = self.list.lower_bound(search_bytes.as_ref()) {
             let found_internal_key = InternalKey::decode_from(&found_key)?;
             if found_internal_key.user_key() == key {
                 return Ok(Some(Entry {

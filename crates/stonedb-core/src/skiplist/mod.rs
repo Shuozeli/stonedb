@@ -7,7 +7,7 @@
 //! - Reverse iteration via prev pointer
 //! - Zero-copy keys via Bytes
 //!
-//! Reference: https://github.com/tikv/agatedb/blob/master/skiplist/src/list.rs
+//! Reference: <https://github.com/tikv/agatedb/blob/master/skiplist/src/list.rs>
 
 mod arena;
 pub use self::arena::Arena;
@@ -199,6 +199,18 @@ impl SkipList {
             }
         }
 
+        if next[0] != 0 {
+            unsafe {
+                let next_node = &mut *Self::get_node(&arena, next[0]);
+                if next_node.key == key {
+                    if next_node.value != value {
+                        next_node.value = value;
+                    }
+                    return None;
+                }
+            }
+        }
+
         // Allocate new node
         let node_offset = Node::alloc(&mut arena, key, value, height);
 
@@ -320,6 +332,17 @@ impl SkipList {
 
     /// Get key-value pair by key.
     pub fn get_with_key(&self, key: &[u8]) -> Option<(Bytes, Bytes)> {
+        self.lower_bound(key).and_then(|(found_key, value)| {
+            if found_key.as_ref() == key {
+                Some((found_key, value))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Get the first key-value pair whose key is greater than or equal to `key`.
+    pub fn lower_bound(&self, key: &[u8]) -> Option<(Bytes, Bytes)> {
         let mut current = self.head_offset();
         let mut level = self.list_height();
         let arena = self.inner.arena.borrow();
@@ -357,7 +380,7 @@ impl SkipList {
                         level -= 1;
                         continue;
                     }
-                    return None;
+                    return Some((next_node.key.clone(), next_node.value.clone()));
                 }
                 Ordering::Equal => {
                     return Some((next_node.key.clone(), next_node.value.clone()));
