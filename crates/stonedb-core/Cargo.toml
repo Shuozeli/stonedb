@@ -17,3 +17,12 @@ serde_json = { version = "1", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
 
 [dev-dependencies]
+concurrent-test-framework = { path = "../concurrent-test-framework" }
+criterion = "0.8"
+
+[[bench]]
+name = "bench"
+harness = false
+
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = "0.4.0"

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/stonedb-core",
+    "crates/concurrent-test-framework",
 ]
 
 # Default package manifest for crates we haven't created yet

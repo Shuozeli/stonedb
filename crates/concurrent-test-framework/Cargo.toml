@@ -1,0 +1,12 @@
+[package]
+name = "concurrent-test-framework"
+version = "0.1.0"
+edition = "2021"
+description = "A framework for testing concurrent code with controlled interleaving and dynamic capture"
+
+[dependencies]
+
+[dev-dependencies]
+
+[features]
+default = []

@@ -3,3 +3,10 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Local tool state
+.beu/

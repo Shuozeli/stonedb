@@ -66,4 +66,4 @@ _Add a brief overview of your project architecture_
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- **DO NOT commit** - do not run `git commit` until explicitly instructed by the user

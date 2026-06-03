@@ -30,9 +30,9 @@
 pub use entry::{Entry, ValueType};
 pub use error::{Error, Result};
 pub use iterator::Iterator;
-pub use key::InternalKey;
+pub use key::{InternalKey, InternalKeyComparator};
 pub use memtable::MemTable;
-pub use skiplist::SkipList;
+pub use skiplist::{BytewiseComparator, SkipList};
 
 #[cfg(feature = "timeline")]
 pub use timeline::{emit, Observable, TimelineEvent};

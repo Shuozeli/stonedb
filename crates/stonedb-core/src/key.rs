@@ -7,6 +7,7 @@
 
 use crate::entry::{Entry, ValueType};
 use crate::error::Result;
+use crate::skiplist::KeyComparator;
 use std::cmp::Ordering;
 
 /// Maximum sequence number (2^56 - 1)
@@ -127,6 +128,58 @@ impl From<&Entry> for InternalKey {
     }
 }
 
+/// Length of the InternalKey trailer: 7-byte sequence + 1-byte value type.
+const TRAILER_LEN: usize = 8;
+
+/// Split an encoded InternalKey into `(user_key, trailer)`.
+///
+/// Defensive: keys shorter than the trailer are treated as all user key. Well
+/// formed InternalKeys always carry the 8-byte trailer, so this only guards the
+/// empty head sentinel.
+fn split_internal(key: &[u8]) -> (&[u8], &[u8]) {
+    if key.len() < TRAILER_LEN {
+        (key, &[])
+    } else {
+        key.split_at(key.len() - TRAILER_LEN)
+    }
+}
+
+/// Comparator for InternalKey-encoded keys stored in the MemTable skiplist.
+///
+/// Orders by user key ascending, then by the encoded 8-byte trailer ascending
+/// so the newest version (highest sequence) of a user key sorts first. This mirrors
+/// [`InternalKey`]'s [`Ord`] and is StoneDB's analogue of AgateDB's
+/// `FixedLengthSuffixComparator(8)`: because every write carries a distinct
+/// sequence, each insert is a unique immutable node and the skiplist never needs
+/// to mutate an existing value.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InternalKeyComparator;
+
+impl InternalKeyComparator {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl KeyComparator for InternalKeyComparator {
+    #[inline]
+    fn compare_key(&self, lhs: &[u8], rhs: &[u8]) -> Ordering {
+        let (lhs_user, lhs_trailer) = split_internal(lhs);
+        let (rhs_user, rhs_trailer) = split_internal(rhs);
+        match lhs_user.cmp(rhs_user) {
+            // The trailer stores MAX_SEQUENCE - sequence, so newer sequences
+            // have smaller encoded trailers and sort first.
+            Ordering::Equal => lhs_trailer.cmp(rhs_trailer),
+            other => other,
+        }
+    }
+
+    #[inline]
+    fn same_key(&self, lhs: &[u8], rhs: &[u8]) -> bool {
+        split_internal(lhs).0 == split_internal(rhs).0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +210,41 @@ mod tests {
         let key = InternalKey::new_max(b"test");
         assert_eq!(key.user_key(), b"test");
         assert_eq!(key.sequence(), MAX_SEQUENCE);
+    }
+
+    #[test]
+    fn test_comparator_orders_newest_version_first() {
+        // Arrange: two versions of the same user key plus a later user key.
+        let cmp = InternalKeyComparator::new();
+        let a_v100 = InternalKey::new(b"a", 100, ValueType::Value);
+        let a_v200 = InternalKey::new(b"a", 200, ValueType::Value);
+        let b_v50 = InternalKey::new(b"b", 50, ValueType::Value);
+
+        // Act + Assert: higher sequence of the same user key sorts first;
+        // different user keys sort by user key regardless of sequence.
+        assert_eq!(
+            cmp.compare_key(a_v200.as_encoded(), a_v100.as_encoded()),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp.compare_key(a_v100.as_encoded(), b_v50.as_encoded()),
+            Ordering::Less
+        );
+        assert!(cmp.same_key(a_v100.as_encoded(), a_v200.as_encoded()));
+        assert!(!cmp.same_key(a_v100.as_encoded(), b_v50.as_encoded()));
+    }
+
+    #[test]
+    fn test_comparator_matches_internal_key_ord() {
+        // Arrange: the standalone comparator must agree with InternalKey::Ord.
+        let cmp = InternalKeyComparator::new();
+        let lhs = InternalKey::new(b"k", 7, ValueType::Value);
+        let rhs = InternalKey::new(b"k", 9, ValueType::Delete);
+
+        // Act + Assert.
+        assert_eq!(
+            cmp.compare_key(lhs.as_encoded(), rhs.as_encoded()),
+            lhs.cmp(&rhs)
+        );
     }
 }

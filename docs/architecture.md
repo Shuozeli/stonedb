@@ -1,3 +1,5 @@
+<!-- agent-updated: 2026-05-30T20:11:01Z -->
+
 # StoneDB Architecture
 
 **Production-grade**, high-performance LSM-tree key-value store inspired by RocksDB and AgateDB, written in pure Rust. Not educational.
@@ -87,10 +89,24 @@ This is an embeddable, persistent key-value database using the **LSM-tree (Log-S
 ### 2. MemTable
 - **Purpose**: In-memory sorted structure for fast writes
 - **Implementation**: SkipList with Arena allocator (AgateDB-style)
+- **MVCC via versioned keys**: every write inserts a **distinct, immutable node**
+  keyed by an `InternalKey` (`user_key | sequence(7B) | type(1B)`). Updates and
+  deletes are never in-place: a newer version simply sorts ahead of older ones,
+  and a delete is a tombstone (`type = Delete`, empty value). This is StoneDB's
+  analogue of AgateDB's timestamp-suffixed keys.
+  - **`InternalKeyComparator`**: orders by user key ascending, then trailer
+    descending, so the newest version of a key is found first. Reads `seek` to
+    `InternalKey::new_max(user_key)` and take the landed node if its user key matches.
+  - **Immutable nodes**: because every write is a unique key, the skiplist never
+    mutates a linked node — this is what makes concurrent reads safe (a value is
+    never overwritten under a reader). `SkipList::put` is insert-only: a duplicate
+    key returns `Some((key, value))` rather than overwriting.
 - **Characteristics**:
   - **Arena allocator**: Pre-allocated memory pool, no malloc per insert
-  - **Lock-free CAS**: Concurrent writes without mutex
-  - **Reverse iteration**: `prev` pointer for backward scan
+  - **Lock-free CAS**: Concurrent writes without mutex (single-writer + concurrent
+    readers by default; multi-writer via CAS when `allow_concurrent_write`)
+  - **Reverse iteration**: `prev` pointer for backward scan (single-writer mode;
+    concurrent mode falls back to `find_near`)
   - **Zero-copy keys**: `Bytes` type (shared ownership)
   - Becomes "immutable" when full → triggers flush
 
@@ -176,22 +192,28 @@ WAL ──────────────► MemTable ───────
 | Create crates | stonedb-core, stonedb-storage, stonedb-engine |
 | Basic test harness | Can run tests |
 
-### Phase 1: Core Data Structures (No I/O) ⚠️ REWRITE NEEDED
+### Phase 1: Core Data Structures (No I/O) ✅ DONE
 | Task | Delivers | Status |
 |------|----------|--------|
-| SkipList | ~~O(log n) educational~~ | **→ Rewrite with Arena + CAS** |
-| MemTable | In-memory key-value store | Update for new SkipList |
+| SkipList | Arena + lock-free CAS, AgateDB-style | Done |
+| MemTable | In-memory store, MVCC via InternalKey | Done |
 | InternalKey encoding | Key with sequence + type | Done |
+| `InternalKeyComparator` | Newest-version-first ordering | Done |
 | Basic Iterator trait | Foundation for reads | Done |
 
 #### SkipList Comparison
 
 | Aspect | StoneDB (current) | AgateDB | RocksDB |
 |--------|-------------------|---------|---------|
-| **Memory** | `Box<Node>` | Arena | Arena |
-| **Concurrency** | Single-threaded | CAS | Mutex |
-| **Reverse** | No | `prev` | No |
-| **Keys** | `K: Clone` | `Bytes` | `std::string` |
+| **Memory** | Arena (atomic offsets) | Arena | Arena |
+| **Concurrency** | Single-writer + concurrent readers; CAS multi-writer | CAS | Mutex |
+| **Node mutability** | Immutable once linked (insert-only) | Immutable | Immutable |
+| **Updates** | New versioned node (MVCC) | New versioned node (MVCC) | New versioned node |
+| **Reverse** | `prev` (single-writer) / `find_near` | `prev` | No |
+| **Keys** | `Bytes` + pluggable `KeyComparator` | `Bytes` | inlined in node |
+
+> Not yet adopted from RocksDB: inlined keys (StoneDB stores `Bytes`, one pointer
+> hop per compare), the cache-line node layout, and the Splice insertion hint.
 
 ### Phase 2: In-Memory DB (No Persistence)
 | Task | Delivers |
@@ -250,9 +272,9 @@ stonedb/
 │   │   ├── Cargo.toml
 │   │   ├── src/
 │   │   │   ├── lib.rs
-│   │   │   ├── skiplist.rs       # SkipList implementation
-│   │   │   ├── memtable.rs       # MemTable (wraps SkipList)
-│   │   │   ├── key.rs           # InternalKey encoding
+│   │   │   ├── skiplist/         # SkipList (mod.rs, arena.rs, key.rs/KeyComparator)
+│   │   │   ├── memtable.rs       # MemTable (MVCC over SkipList)
+│   │   │   ├── key.rs           # InternalKey encoding + InternalKeyComparator
 │   │   │   ├── entry.rs         # Entry types
 │   │   │   └── error.rs         # Core errors
 │   │   └── tests/

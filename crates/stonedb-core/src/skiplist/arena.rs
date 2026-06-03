@@ -7,6 +7,10 @@
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::mem;
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+/// Alignment mask for 8-byte alignment
+const ADDR_ALIGN_MASK: usize = 7;
 
 /// A pre-allocated memory pool for SkipList nodes.
 ///
@@ -15,8 +19,8 @@ use std::mem;
 pub struct Arena {
     /// Pointer to the start of the arena
     start: *mut u8,
-    /// Pointer to the current allocation head
-    ptr: *mut u8,
+    /// Current allocation head
+    ptr: AtomicPtr<u8>,
     /// Total capacity in bytes
     capacity: usize,
 }
@@ -30,8 +34,9 @@ impl Arena {
             panic!("Arena allocation failed");
         }
         Self {
+            // Offset 0 is invalid for offset/get_mut, so start at 8
             start,
-            ptr: start,
+            ptr: AtomicPtr::new(std::ptr::null_mut()),
             capacity,
         }
     }
@@ -40,27 +45,56 @@ impl Arena {
     ///
     /// Returns the offset from the start of the arena.
     /// Panics if out of memory.
-    pub fn alloc(&mut self, size: usize) -> usize {
-        let offset = self.offset();
-        let new_ptr = self.ptr.wrapping_add(size);
+    pub fn alloc(&self, size: usize) -> usize {
+        // Align size to 8 bytes
+        let size = (size + ADDR_ALIGN_MASK) & !ADDR_ALIGN_MASK;
 
-        // Check for overflow or out of memory
-        if new_ptr > self.start.wrapping_add(self.capacity) || new_ptr < self.ptr {
-            panic!(
-                "Arena out of memory: requested {} bytes, {} remaining",
-                size,
-                self.remaining()
-            );
+        loop {
+            let current_ptr = self.ptr.load(Ordering::SeqCst);
+            let offset = if current_ptr.is_null() {
+                // First allocation - leave room for offset 0 (invalid)
+                8
+            } else {
+                unsafe { current_ptr.offset_from(self.start) as usize }
+            };
+
+            // Check if we have enough space
+            if offset + size > self.capacity {
+                panic!(
+                    "Arena out of memory: requested {} bytes, {} remaining",
+                    size,
+                    self.capacity - offset
+                );
+            }
+
+            let new_ptr = if current_ptr.is_null() {
+                unsafe { self.start.add(offset + size) }
+            } else {
+                unsafe { current_ptr.add(size) }
+            };
+
+            // Try to update ptr atomically
+            match self.ptr.compare_exchange(
+                current_ptr,
+                new_ptr,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return offset,
+                Err(_) => continue, // Another thread modified ptr, retry
+            }
         }
-
-        self.ptr = new_ptr;
-        offset
     }
 
     /// Get the current offset (bytes allocated so far).
     #[inline]
     pub fn offset(&self) -> usize {
-        unsafe { self.ptr.offset_from(self.start) as usize }
+        let ptr = self.ptr.load(Ordering::SeqCst);
+        if ptr.is_null() {
+            0
+        } else {
+            unsafe { ptr.offset_from(self.start) as usize }
+        }
     }
 
     /// Get a mutable pointer to a given offset.
@@ -69,37 +103,37 @@ impl Arena {
     /// The offset must be valid and within the arena.
     #[inline]
     pub unsafe fn get_mut(&self, offset: usize) -> *mut u8 {
-        self.start.add(offset)
-    }
-
-    /// Get offset from a pointer within the arena.
-    #[inline]
-    #[allow(dead_code)]
-    pub unsafe fn offset_from(&self, ptr: *const u8) -> usize {
-        ptr.offset_from(self.start) as usize
+        if offset == 0 {
+            std::ptr::null_mut()
+        } else {
+            self.start.add(offset)
+        }
     }
 
     /// Get the total bytes allocated.
     #[inline]
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.offset()
     }
 
     /// Get the remaining bytes available.
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn remaining(&self) -> usize {
         self.capacity - self.offset()
     }
 
     /// Check if arena is empty.
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.offset() == 0
     }
 }
+
+// Safety: Arena uses atomic operations for thread-safe allocation.
+unsafe impl Send for Arena {}
+unsafe impl Sync for Arena {}
 
 impl Drop for Arena {
     fn drop(&mut self) {
@@ -116,15 +150,18 @@ mod tests {
 
     #[test]
     fn test_basic_alloc() {
-        let mut arena = Arena::with_capacity(1024);
+        let arena = Arena::with_capacity(1024);
 
-        let off1 = arena.alloc(100);
-        assert_eq!(off1, 0);
-        assert_eq!(arena.len(), 100);
+        // First allocation starts at offset 8 (offset 0 is reserved as invalid)
+        let off1 = arena.alloc(100); // 100 aligned to 104
+        assert_eq!(off1, 8);
+        // len() returns the next free offset, not actual bytes used
+        assert_eq!(arena.len(), 112); // 8 + 104 = 112
+        assert_eq!(arena.remaining(), 1024 - 112);
 
-        let off2 = arena.alloc(50);
-        assert_eq!(off2, 100);
-        assert_eq!(arena.len(), 150);
+        let off2 = arena.alloc(50); // 50 aligned to 56
+        assert_eq!(off2, 112);
+        assert_eq!(arena.len(), 168); // 112 + 56 = 168
 
         // Check we can write and read via offset
         unsafe {
@@ -136,13 +173,49 @@ mod tests {
 
     #[test]
     fn test_arena_overflow() {
-        let mut arena = Arena::with_capacity(100);
+        // Arena with 256 bytes - after first 100-byte alloc (aligned to 104),
+        // offset=8, ptr moves to 112, remaining=144
+        // Second 100-byte alloc starts at 112, uses 104, ptr moves to 216, remaining=40
+        let arena = Arena::with_capacity(256);
 
-        arena.alloc(100);
-        assert_eq!(arena.remaining(), 0);
+        let off1 = arena.alloc(100);
+        assert_eq!(off1, 8);
+        assert_eq!(arena.len(), 112); // 8 + 104
+        assert_eq!(arena.remaining(), 256 - 112);
 
-        // Next allocation should panic
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| arena.alloc(1)));
+        // Second 100-byte alloc uses 104 bytes starting at offset 112
+        let off2 = arena.alloc(100);
+        assert_eq!(off2, 112);
+        assert_eq!(arena.len(), 216); // 112 + 104
+
+        // 40 bytes remaining - 40 is not enough for a 48-byte (aligned 1) allocation
+        assert_eq!(arena.remaining(), 40);
+
+        // Next allocation of 41 bytes (aligned to 48) should panic since only 40 remaining
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| arena.alloc(41)));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_arena_empty() {
+        let arena = Arena::with_capacity(1024);
+        assert!(arena.is_empty());
+        assert_eq!(arena.len(), 0);
+        assert_eq!(arena.remaining(), 1024);
+    }
+
+    #[test]
+    fn test_arena_get_mut() {
+        let arena = Arena::with_capacity(1024);
+        let off = arena.alloc(16);
+
+        unsafe {
+            let ptr = arena.get_mut(off);
+            assert!(!ptr.is_null());
+
+            // Offset 0 returns null
+            let null_ptr = arena.get_mut(0);
+            assert!(null_ptr.is_null());
+        }
     }
 }
